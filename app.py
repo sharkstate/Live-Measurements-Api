@@ -4,11 +4,14 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import torch
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 import torch.nn.functional as F
+import os
 
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', static_url_path='')
+CORS(app)  # Enable CORS for all routes
 
 mp_pose = mp.solutions.pose
 mp_holistic = mp.solutions.holistic
@@ -21,9 +24,14 @@ DEFAULT_HEIGHT_CM = 152.0  # Default height if not provided
 
 # Load depth estimation model
 def load_depth_model():
-    model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
-    model.eval()
-    return model
+    try:
+        model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", trust_repo=True)
+        model.eval()
+        return model
+    except Exception as e:
+        print(f"Warning: Could not load MiDaS model: {e}")
+        print("Continuing without depth estimation...")
+        return None
 
 depth_model = load_depth_model()
 
@@ -47,16 +55,23 @@ def detect_reference_object(image):
 
 def estimate_depth(image):
     """Uses AI-based depth estimation to improve circumference calculations."""
-    input_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0
-    input_tensor = torch.tensor(input_image, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
-    
-    # Resize input to match MiDaS model input size
-    input_tensor = F.interpolate(input_tensor, size=(384, 384), mode="bilinear", align_corners=False)
+    if depth_model is None:
+        return None
+        
+    try:
+        input_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0
+        input_tensor = torch.tensor(input_image, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        
+        # Resize input to match MiDaS model input size
+        input_tensor = F.interpolate(input_tensor, size=(384, 384), mode="bilinear", align_corners=False)
 
-    with torch.no_grad():
-        depth_map = depth_model(input_tensor)
-    
-    return depth_map.squeeze().numpy()
+        with torch.no_grad():
+            depth_map = depth_model(input_tensor)
+        
+        return depth_map.squeeze().numpy()
+    except Exception as e:
+        print(f"Warning: Depth estimation failed: {e}")
+        return None
 
 def calculate_distance_using_height(landmarks, image_height, user_height_cm):
     """Calculate distance using the user's known height."""
@@ -375,6 +390,11 @@ def validate_front_image(image_np):
         print(f"Error validating body image: {e}")
         return False, "You arent providing images correctly. Please try again."
     
+@app.route("/")
+def index():
+    """Serve the main HTML page."""
+    return send_from_directory('static', 'index.html')
+
 @app.route("/upload_images", methods=["POST"])
 def upload_images():
     if "front" not in request.files:
@@ -457,4 +477,4 @@ def upload_images():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8001)
+    app.run(host='0.0.0.0', port=8002)
